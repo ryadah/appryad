@@ -1154,8 +1154,11 @@ body.mail-only-mode .header-text{display:block!important;}
         // ===== المزامنة عبر الشبكة المحلية =====
         // عند تشغيل الصفحة من خادم المؤسسة (وليس file://) تصبح قاعدة البيانات مركزية،
         // بحيث يرى جميع المستخدمين الإضافات والتعديلات دون إعادة إرسال ملف HTML.
-        const LAN_SYNC_ENABLED = location.protocol !== 'file:' && location.pathname !== '' || location.protocol === 'file:';
-        const LAN_API_BASE = location.protocol === 'file:' ? 'http://ryadah.3utilities.com:8000' : '';
+        const LAN_SYNC_ENABLED = true;
+        const LAN_ENDPOINTS = location.protocol === 'file:' ? ['http://192.168.3.220:8000','http://192.168.1.220:8000','http://ryadah.3utilities.com:8000'] : [location.origin];
+        let LAN_API_BASE = '';
+        let LAN_WS_URL = '';
+        let LAN_ENDPOINT_READY = false;
         let LAN_SERVER_STATE = null;
         let LAN_SERVER_REVISION = 0;
         let LAN_LAST_APPLIED_REVISION = 0;
@@ -1169,8 +1172,17 @@ body.mail-only-mode .header-text{display:block!important;}
         let LAN_WS_CONNECTED = false;
         let LAN_AUTH_TOKEN = '';
         let LAN_WS_MANUAL_CLOSE = false;
+        let LAN_WS_BACKOFF = 1000;
         const LAN_WS_PENDING = new Map();
-        const LAN_WS_URL = (location.protocol === 'file:' ? 'ws://ryadah.3utilities.com:8001/ws' : ((location.protocol === 'https:' ? 'wss://' : 'ws://') + location.host.replace(/:8000$/, ':8001') + '/ws'));
+        function wsUrlForBase(base){ const u=new URL(base); return (u.protocol==='https:'?'wss:':'ws:')+'//'+u.host+'/ws'; }
+        async function selectBestServerEndpoint(){
+            if(LAN_ENDPOINT_READY) return LAN_API_BASE;
+            LAN_SERVER_CHECKING=true; updateConnectionStatusUI();
+            for(const base of LAN_ENDPOINTS){
+                try{ const c=new AbortController(); const timer=setTimeout(()=>c.abort(),900); const res=await fetch(base+'/api/health',{cache:'no-store',signal:c.signal}); clearTimeout(timer); if(res.ok){ LAN_API_BASE=base; LAN_WS_URL=wsUrlForBase(base); LAN_ENDPOINT_READY=true; return base; } }catch(e){}
+            }
+            LAN_ENDPOINT_READY=false; return '';
+        }
         const MAIL_AUTO_DOWNLOAD_KEY = 'medicalDirectoryMailAutoDownload_v1';
         function mailAutoDownloadEnabled(){ try { const v=JSON.parse(localStorage.getItem(MAIL_AUTO_DOWNLOAD_KEY)||'null'); return v===null ? true : !!v; } catch(e){ return true; } }
         function saveMailAutoDownload(v){ try{localStorage.setItem(MAIL_AUTO_DOWNLOAD_KEY,JSON.stringify(!!v));}catch(e){} }
@@ -1230,15 +1242,23 @@ body.mail-only-mode .header-text{display:block!important;}
         }
 
         function connectLanWebSocket(){
-            if(!LAN_SYNC_ENABLED || typeof WebSocket==='undefined') return;
+            if(!LAN_SYNC_ENABLED || !LAN_ENDPOINT_READY || !LAN_WS_URL || typeof WebSocket==='undefined') return;
             try{ if(LAN_WS && (LAN_WS.readyState===WebSocket.OPEN || LAN_WS.readyState===WebSocket.CONNECTING)) return; }catch(e){}
             try{
                 LAN_WS_MANUAL_CLOSE=false; const ws=new WebSocket(LAN_WS_URL); LAN_WS=ws;
-                ws.onopen=function(){LAN_WS_CONNECTED=true;LAN_SERVER_ONLINE=true;LAN_SERVER_CHECKING=false;if(typeof updateConnectionStatusUI==='function')updateConnectionStatusUI();};
-                ws.onmessage=function(ev){try{const msg=JSON.parse(ev.data);if(msg.requestId&&LAN_WS_PENDING.has(msg.requestId)){const p=LAN_WS_PENDING.get(msg.requestId);LAN_WS_PENDING.delete(msg.requestId);if(msg.type==='state_saved'||msg.type==='message_saved')p.resolve(msg);else p.reject(new Error(msg.error||'WebSocket request failed'));}if(msg.type==='auth_required'){ if(LAN_AUTH_TOKEN) ws.send(JSON.stringify({type:'auth',token:LAN_AUTH_TOKEN})); else ws.close(); } else if(msg.type==='auth_ok'){ if(msg.state) applyRemoteState(msg.state); LAN_SERVER_ONLINE=true; LAN_SERVER_CHECKING=false; updateConnectionStatusUI(); } else if(msg.type==='state'&&msg.state){applyRemoteState(msg.state);LAN_SERVER_ONLINE=true;LAN_SERVER_CHECKING=false;if(typeof updateConnectionStatusUI==='function')updateConnectionStatusUI();}else if(msg.type==='state_revision'){if(Number(msg.revision)>LAN_SERVER_REVISION) pollLanServer();}else if(msg.type==='message'&&msg.message){const st=LAN_SERVER_STATE?{...LAN_SERVER_STATE,messages:[...(LAN_SERVER_STATE.messages||[]).filter(x=>x&&x.id!==msg.message.id),msg.message],revision:Number(msg.revision)||LAN_SERVER_REVISION}:null;if(st)applyRemoteState(st);else{mailMessages=[...mailMessages.filter(x=>x&&x.id!==msg.message.id),msg.message];saveMailMessages();}maybeAutoDownloadAttachments([msg.message]);}}catch(e){}};
-                ws.onerror=function(){LAN_WS_CONNECTED=false;LAN_SERVER_ONLINE=false;if(typeof updateConnectionStatusUI==='function')updateConnectionStatusUI();};
-                ws.onclose=function(){LAN_WS_CONNECTED=false;LAN_SERVER_ONLINE=false;if(typeof updateConnectionStatusUI==='function')updateConnectionStatusUI();if(!LAN_WS_MANUAL_CLOSE){clearTimeout(LAN_WS_RECONNECT_TIMER);LAN_WS_RECONNECT_TIMER=setTimeout(connectLanWebSocket,5000);}};
-            }catch(e){LAN_WS_CONNECTED=false;setTimeout(connectLanWebSocket,5000);}
+                ws.onopen=function(){LAN_WS_CONNECTED=true;LAN_WS_BACKOFF=1000;LAN_SERVER_ONLINE=true;LAN_SERVER_CHECKING=false;if(typeof updateConnectionStatusUI==='function')updateConnectionStatusUI();};
+                ws.onmessage=function(ev){try{const msg=JSON.parse(ev.data);
+                    if(msg.requestId&&LAN_WS_PENDING.has(msg.requestId)){const p=LAN_WS_PENDING.get(msg.requestId);LAN_WS_PENDING.delete(msg.requestId);if(['state_saved','message_saved','message_status'].includes(msg.type))p.resolve(msg);else if(msg.type==='error')p.reject(new Error(msg.error||'WebSocket request failed'));}
+                    if(msg.type==='auth_required'){ if(LAN_AUTH_TOKEN) ws.send(JSON.stringify({type:'auth',token:LAN_AUTH_TOKEN})); else ws.close(); }
+                    else if(msg.type==='auth_ok'){ if(msg.state) applyRemoteState(msg.state); LAN_SERVER_ONLINE=true; LAN_SERVER_CHECKING=false; updateConnectionStatusUI(); flushOutgoingMailQueue(); }
+                    else if(msg.type==='state'&&msg.state){applyRemoteState(msg.state);LAN_SERVER_ONLINE=true;LAN_SERVER_CHECKING=false;updateConnectionStatusUI();}
+                    else if(msg.type==='state_revision'){if(Number(msg.revision)>LAN_SERVER_REVISION) pollLanServer();}
+                    else if(msg.type==='message'&&msg.message){const st=LAN_SERVER_STATE?{...LAN_SERVER_STATE,messages:[...(LAN_SERVER_STATE.messages||[]).filter(x=>x&&x.id!==msg.message.id),msg.message],revision:Number(msg.revision)||LAN_SERVER_REVISION}:null;if(st)applyRemoteState(st);else{mailMessages=[...mailMessages.filter(x=>x&&x.id!==msg.message.id),msg.message];saveMailMessages();} maybeAutoDownloadAttachments([msg.message]); if(msg.message.to===currentUser?.username) sendMessageAck(msg.message.id,'delivered');}
+                    else if(msg.type==='message_status'&&msg.messageId){const m=mailMessages.find(x=>x&&x.id===msg.messageId);if(m){if(msg.delivered)m.delivered=true;if(msg.read){m.read=true;m.delivered=true;}m.status=m.read?'read':(m.delivered?'delivered':'sent');saveMailMessages();refreshMailUI();}}
+                }catch(e){}};
+                ws.onerror=function(){ /* الاتصال قد يستمر عبر HTTP الاحتياطي؛ لا نعلن الانقطاع فوراً */ };
+                ws.onclose=function(){LAN_WS_CONNECTED=false;if(typeof updateConnectionStatusUI==='function')updateConnectionStatusUI();if(!LAN_WS_MANUAL_CLOSE){clearTimeout(LAN_WS_RECONNECT_TIMER);const delay=Math.min(LAN_WS_BACKOFF,15000)+Math.floor(Math.random()*500);LAN_WS_BACKOFF=Math.min(LAN_WS_BACKOFF*2,15000);LAN_WS_RECONNECT_TIMER=setTimeout(connectLanWebSocket,delay);}};
+            }catch(e){LAN_WS_CONNECTED=false;clearTimeout(LAN_WS_RECONNECT_TIMER);LAN_WS_RECONNECT_TIMER=setTimeout(connectLanWebSocket,Math.min(LAN_WS_BACKOFF,15000));LAN_WS_BACKOFF=Math.min(LAN_WS_BACKOFF*2,15000);}
         }
 
         function loadLanStateSync() {
@@ -1378,6 +1398,21 @@ body.mail-only-mode .header-text{display:block!important;}
             });
             html += '</tbody></table></div>';
             el.innerHTML = html;
+        }
+
+
+        async function showChangeReportTab(tab){
+            if(!currentUser || !currentUser.admin) return;
+            const el=document.getElementById('changeReportContent');
+            document.querySelectorAll('#changeReportModal .btn').forEach(b=>b.classList.remove('active'));
+            if(tab==='users'){
+                el.innerHTML='<div class="text-center text-muted py-4">جاري تحميل تقرير المستخدمين والصلاحيات...</div>';
+                let activity={};
+                try{ if(LAN_API_BASE&&LAN_AUTH_TOKEN){const r=await fetch(LAN_API_BASE+'/api/users/activity',{headers:{'Authorization':'Bearer '+LAN_AUTH_TOKEN},cache:'no-store'}); if(r.ok){const d=await r.json();activity=d.activity||{};}} }catch(e){}
+                const now=Date.now();
+                const rows=users.map(u=>{const a=activity[u.username]||{};const lastSeen=a.lastSeen||u.lastSeen||null;const active=lastSeen && (now-new Date(lastSeen).getTime()<=120000);const perms=u.admin?['مدير النظام']:PERMISSION_KEYS.filter(k=>u.permissions&&u.permissions[k]).map(k=>PERMISSION_LABELS[k]);const group=permissionGroups.find(g=>g.id===u.permissionGroupId);return '<tr><td>'+escapeHtml(u.displayName||u.username)+'</td><td>'+escapeHtml(u.username)+'</td><td>'+ (u.status==='stopped'?'<span class="badge bg-danger">موقوف</span>':'<span class="badge bg-success">نشط</span>') +'</td><td>'+escapeHtml(group?.name||'صلاحيات مخصصة')+'</td><td>'+escapeHtml(perms.join('، ')||'بدون صلاحيات')+'</td><td>'+String(Number(a.loginCount??u.loginCount)||0)+'</td><td>'+escapeHtml(a.lastLogin||u.lastLogin?formatLogDate(a.lastLogin||u.lastLogin):'—')+'</td><td>'+(active?'<span class="badge bg-success">متصل الآن</span>':'<span class="text-muted">غير متصل</span>')+'</td></tr>';}).join('');
+                el.innerHTML='<div class="table-responsive"><table class="table table-bordered table-hover align-middle text-center small"><thead><tr><th>اسم المستخدم</th><th>الحساب</th><th>الحالة</th><th>مجموعة الصلاحيات</th><th>الصلاحيات الفعلية</th><th>عدد الدخول</th><th>آخر دخول</th><th>النشاط</th></tr></thead><tbody>'+rows+'</tbody></table></div>';
+            }else renderChangeReport();
         }
 
 
@@ -1753,7 +1788,7 @@ body.mail-only-mode .header-text{display:block!important;}
         // WebSocket هو القناة الفورية الأساسية. وإذا تعذر WebSocket (مثل حظر المنفذ 8001
         // أو مشكلة في NAT/الجدار الناري) نستخدم مزامنة HTTP سريعة كقناة احتياطية.
         // هذا يمنع بقاء البريد متأخرًا 60 ثانية كما كان في النسخة السابقة.
-        if (LAN_SYNC_ENABLED) setInterval(()=>{ if(!LAN_WS_CONNECTED && currentUser && !document.hidden) pollLanServer(); }, 2000);
+        if (LAN_SYNC_ENABLED) setInterval(()=>{ if(LAN_ENDPOINT_READY && !LAN_WS_CONNECTED && currentUser && !document.hidden) pollLanServer(); }, 7000);
         // يبدأ WebSocket بعد نجاح تسجيل الدخول واستلام رمز الجلسة.
 
         // حفظ تلقائي شامل: الخدمات + أنواع الخدمات + المستخدمون + سجل التعديلات.
@@ -1884,9 +1919,15 @@ body.mail-only-mode .header-text{display:block!important;}
         }
 
         async function authenticateLanSession(username,password){
-            if(!LAN_SYNC_ENABLED || !LAN_API_BASE) return;
-            try{ const res=await fetch(LAN_API_BASE+'/api/auth/login',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({username,password}),cache:'no-store'}); if(res.ok){const data=await res.json(); LAN_AUTH_TOKEN=String(data.token||''); if(LAN_WS) try{LAN_WS.close();}catch(e){}; setTimeout(connectLanWebSocket,100);}}catch(e){}
+            if(!LAN_SYNC_ENABLED) return;
+            try{ if(!LAN_ENDPOINT_READY) await selectBestServerEndpoint(); if(!LAN_API_BASE) return; const res=await fetch(LAN_API_BASE+'/api/auth/login',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({username,password}),cache:'no-store'}); if(res.ok){const data=await res.json(); LAN_AUTH_TOKEN=String(data.token||''); if(LAN_WS) try{LAN_WS.close();}catch(e){}; setTimeout(connectLanWebSocket,50); await sendUserHeartbeat(false);}}catch(e){}
         }
+        async function sendUserHeartbeat(login=false){
+            if(!LAN_API_BASE||!LAN_AUTH_TOKEN||!currentUser)return;
+            try{await fetch(LAN_API_BASE+'/api/users/heartbeat',{method:'POST',headers:{'Content-Type':'application/json','Authorization':'Bearer '+LAN_AUTH_TOKEN},body:JSON.stringify({username:currentUser.username,login:!!login}),cache:'no-store'});}catch(e){}
+        }
+        let USER_HEARTBEAT_TIMER=null;
+        function startUserHeartbeat(){ clearInterval(USER_HEARTBEAT_TIMER); if(!currentUser)return; sendUserHeartbeat(false); USER_HEARTBEAT_TIMER=setInterval(()=>{if(currentUser)sendUserHeartbeat(false);},60000); }
 
         function login(event){
             event.preventDefault();
@@ -1905,7 +1946,7 @@ body.mail-only-mode .header-text{display:block!important;}
             }
             if(!found){ document.getElementById('loginError').textContent='اسم المستخدم أو كلمة المرور غير صحيحة'; return; }
             if(found.status==='stopped'){ document.getElementById('loginError').textContent='هذا المستخدم موقوف. راجع مدير النظام.'; return; }
-            found.loginCount=(Number(found.loginCount)||0)+1; found.lastLogin=new Date().toISOString(); found.lastSeen=new Date().toISOString(); saveUsers();
+            found.loginCount=(Number(found.loginCount)||0)+1; found.lastLogin=new Date().toISOString(); found.lastSeen=new Date().toISOString(); try{localStorage.setItem(USERS_KEY,JSON.stringify(users));}catch(e){}
             document.getElementById('loginError').textContent='';
             activateLoggedInUser(found);
             startUserHeartbeat();
@@ -2055,7 +2096,7 @@ body.mail-only-mode .header-text{display:block!important;}
         function logoutUser(){
             if(!currentUser) return;
             if(!confirm('هل تريد تسجيل الخروج من الحساب الحالي؟')) return;
-            currentUser=null;
+            clearInterval(USER_HEARTBEAT_TIMER); USER_HEARTBEAT_TIMER=null; currentUser=null;
             try{ if(window.RYADAH_ANDROID_APP && window.Android && typeof window.Android.clearNotificationUser==='function') window.Android.clearNotificationUser(); }catch(e){}
             try{sessionStorage.removeItem(LOGIN_SESSION_KEY);}catch(e){}
             try{sessionStorage.removeItem(PAGE_VIEW_MODE_KEY);}catch(e){}
@@ -2596,6 +2637,23 @@ body.mail-only-mode .header-text{display:block!important;}
             if(wrap) wrap.style.display='block';
             return await new Promise((resolve,reject)=>{ const r=new FileReader(); r.onprogress=e=>{if(e.lengthComputable){const v=Math.min(100,Math.round(e.loaded/e.total*100));if(pct)pct.textContent=v+'%';if(bar)bar.style.width=v+'%';if(text)text.textContent='جاري تجهيز المرفق...';}}; r.onload=()=>{if(pct)pct.textContent='100%';if(bar)bar.style.width='100%';if(text)text.textContent='اكتمل تجهيز المرفق، جاري الإرسال...';resolve({name:file.name,size:file.size,type:file.type||'application/octet-stream',data:r.result});}; r.onerror=()=>reject(new Error('تعذر قراءة الملف')); r.readAsDataURL(file); });
         }
+        async function sendMessageAck(messageId,type){
+            if(!messageId||!LAN_API_BASE||!LAN_AUTH_TOKEN)return;
+            try{
+                if(LAN_WS_CONNECTED){ await wsRequest({type:type==='read'?'message_read':'message_delivered',messageId},10000); }
+                else await fetch(LAN_API_BASE+'/api/messages/ack',{method:'POST',headers:{'Content-Type':'application/json','Authorization':'Bearer '+LAN_AUTH_TOKEN},body:JSON.stringify({messageId,type}),cache:'no-store'});
+            }catch(e){}
+        }
+        function markMessageReadRemote(id){const m=mailMessages.find(x=>x&&x.id===id);if(m&&m.to===currentUser?.username)sendMessageAck(id,'read');}
+        const OUTBOX_KEY='medicalDirectoryMailOutbox_v1';
+        let outgoingMailQueue=[];
+        try{outgoingMailQueue=JSON.parse(localStorage.getItem(OUTBOX_KEY)||'[]');if(!Array.isArray(outgoingMailQueue))outgoingMailQueue=[];}catch(e){outgoingMailQueue=[];}
+        function persistOutgoingMailQueue(){try{const safe=outgoingMailQueue.map(x=>({...x,attachmentData:''}));localStorage.setItem(OUTBOX_KEY,JSON.stringify(safe));}catch(e){}}
+        function queueOutgoingMail(item){const i=outgoingMailQueue.findIndex(x=>x&&x.message&&x.message.id===item.message.id);if(i<0)outgoingMailQueue.push(item);else outgoingMailQueue[i]=item;persistOutgoingMailQueue();}
+        function removeOutgoingMail(id){outgoingMailQueue=outgoingMailQueue.filter(x=>!x?.message||x.message.id!==id);persistOutgoingMailQueue();}
+        function flushOutgoingMailQueue(){ if(!LAN_WS_CONNECTED||!outgoingMailQueue.length)return; const q=[...outgoingMailQueue]; q.forEach(item=>sendQueuedMail(item)); }
+        async function sendQueuedMail(item){ try{let attachmentData=item.attachmentData||'';if(!attachmentData&&item.attachmentStoredId&&window.Android&&typeof window.Android.getOutgoingAttachment==='function')attachmentData=window.Android.getOutgoingAttachment(item.attachmentStoredId)||'';const r=await wsRequest({type:'message_send',message:item.message,attachmentData},120000);if(r.state)applyRemoteState(r.state);if(item.attachmentStoredId&&window.Android&&typeof window.Android.deleteOutgoingAttachment==='function')window.Android.deleteOutgoingAttachment(item.attachmentStoredId);removeOutgoingMail(item.message.id);}catch(e){queueOutgoingMail(item);} }
+
         async function sendMail(event){
             event.preventDefault();
             const to=document.getElementById('mailTo').value; if(!to || to===currentUser.username) return;
@@ -2613,15 +2671,19 @@ body.mail-only-mode .header-text{display:block!important;}
                 let attachment=null; if(file)attachment=await readAttachmentWithProgress(file);
                 const msg={id:'MSG-'+Date.now()+'-'+Math.random().toString(36).slice(2,7),from:currentUser.username,to,subject:document.getElementById('mailSubject').value.trim(),body:document.getElementById('mailBody').value.trim(),timestamp:new Date().toISOString(),status:'pending',delivered:false,read:false,attachment:attachment?{id:'ATT-'+Date.now()+'-'+Math.random().toString(36).slice(2,8),name:attachment.name,size:attachment.size,type:attachment.type}:null};
                 if(!LAN_SYNC_ENABLED){throw new Error('server_unavailable');}
-                const attachmentData=attachment ? attachment.data : '';
+                let attachmentData=attachment ? attachment.data : '';
+                let attachmentStoredId='';
+                if(attachment&&window.RYADAH_ANDROID_APP&&window.Android&&typeof window.Android.saveOutgoingAttachment==='function'){attachmentStoredId=msg.attachment.id;const ok=window.Android.saveOutgoingAttachment(attachmentStoredId,attachmentData,attachment.name);if(ok)attachmentData='';}
                 let result;
+                queueOutgoingMail({message:msg,attachmentData,attachmentStoredId});
                 if(LAN_WS_CONNECTED){
                     result=await wsRequest({type:'message_send',message:msg,attachmentData},120000);
                 }else{
-                    const res=await fetch(LAN_API_BASE+'/api/messages/send',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({message:msg,attachmentData}),cache:'no-store'});
+                    const res=await fetch(LAN_API_BASE+'/api/messages/send',{method:'POST',headers:{'Content-Type':'application/json','Authorization':'Bearer '+LAN_AUTH_TOKEN},body:JSON.stringify({message:msg,attachmentData}),cache:'no-store'});
                     if(!res.ok){const er=await res.text();throw new Error(er||('HTTP '+res.status));}
                     result=await res.json();
                 }
+                removeOutgoingMail(msg.id);
                 const savedState=result.state;
                 if(savedState) applyRemoteState(savedState);
                 else {mailMessages.push(msg);saveMailMessages();}
@@ -2631,7 +2693,7 @@ body.mail-only-mode .header-text{display:block!important;}
         }
         function setMailFilter(filter){ mailFilter=filter||'all'; mailUserFilter=''; mailComposeMode=false; mailEditId=''; mailExpandedIds.clear(); document.querySelectorAll('#mailFilters .mail-filter-btn').forEach(btn=>btn.classList.toggle('active',btn.dataset.filter===mailFilter)); refreshMailUI(); scrollMailListToBottom(true); }
         function toggleMailFavorite(id,event){ if(event)event.stopPropagation(); const m=mailMessages.find(x=>x.id===id);if(!m)return;m.favorite=!m.favorite;saveMailMessages();refreshMailUI(); }
-        function toggleMailDetails(id,event){ if(event)event.stopPropagation(); if(mailExpandedIds.has(id))mailExpandedIds.delete(id);else mailExpandedIds.add(id); const m=mailMessages.find(x=>x.id===id);if(m&&m.to===currentUser.username&&!m.read){m.read=true;saveMailMessages();}refreshMailUI(); }
+        function toggleMailDetails(id,event){ if(event)event.stopPropagation(); if(mailExpandedIds.has(id))mailExpandedIds.delete(id);else mailExpandedIds.add(id); const m=mailMessages.find(x=>x.id===id);if(m&&m.to===currentUser.username&&!m.read){m.read=true;saveMailMessages();sendMessageAck(id,'read');}refreshMailUI(); }
         function forwardMail(id,event){ if(event)event.stopPropagation(); const m=mailMessages.find(x=>x.id===id);if(!m)return; const subject=(m.subject||'').startsWith('تحويل:')?m.subject:'تحويل: '+(m.subject||''); const body='\n\n----- الرسالة المحولة -----\nالمرسل الأصلي: '+getUserDisplayName(m.from)+'\nالتاريخ: '+formatLogDate(m.timestamp)+'\n\n'+(m.body||''); mailExpandedIds.delete(id); showComposeMail({subject,body}); }
         function editMailMessage(id,event){
             if(event)event.stopPropagation();
@@ -2653,6 +2715,7 @@ body.mail-only-mode .header-text{display:block!important;}
         }
         function downloadMailAttachment(id,name,mime,dataUrl,url){
             if(window.RYADAH_ANDROID_APP && window.Android){
+                if(id && typeof window.Android.downloadAndStoreAttachment==='function' && url){ const full=String(url).startsWith('http')?String(url):LAN_API_BASE+String(url).replace(/^\/+/, '/'); try{window.Android.downloadAndStoreAttachment(full,id,name||'attachment',mime||'application/octet-stream');setTimeout(()=>{if(typeof window.Android.openStoredAttachment==='function')window.Android.openStoredAttachment(id,name||'attachment',mime||'application/octet-stream');},1200);return;}catch(e){} }
                 if(id && typeof window.Android.openStoredAttachment==='function'){window.Android.openStoredAttachment(id,name||'attachment',mime||'application/octet-stream');return;}
                 if(dataUrl && typeof window.Android.downloadBase64File==='function'){window.Android.downloadBase64File(name||'attachment',dataUrl,mime||'application/octet-stream');return;}
             }
@@ -2824,7 +2887,7 @@ body.mail-only-mode .header-text{display:block!important;}
             try{const x=document.getElementById('appInfoConnection');if(x)x.textContent=LAN_WS_CONNECTED?'متصل مباشر':(LAN_SERVER_ONLINE?'متصل':'غير متصل');}catch(e){}
             const online=!!LAN_SERVER_ONLINE;
             const checking=!!LAN_SERVER_CHECKING;
-            const text=LAN_SYNC_ENABLED ? (checking?'🟠 جاري البحث عن اتصال أو تحديثات...':(online?'🟢 متصل بالخادم':'🔴 غير متصل بالخادم')) : '🟡 وضع محلي';
+            const text=LAN_SYNC_ENABLED ? (checking?'🟠 جاري الاتصال بالخادم...':(online?'🟢 متصل بالخادم':'🔴 غير متصل بالخادم')) : '🟡 وضع محلي';
             const b=document.getElementById('lanStatusBadge'); if(b){b.style.display='inline-block';b.textContent=text;}
             const lb=document.getElementById('loginConnectionStatus'); if(lb){lb.textContent=text;lb.style.color=checking?'#c26a00':(online?'#087f5b':(LAN_SYNC_ENABLED?'#c62828':'#9a6a00'));lb.style.background=checking?'#fff5e6':(online?'#e9f8f3':(LAN_SYNC_ENABLED?'#fff1f1':'#fff8e1'));}
         }
@@ -2834,42 +2897,19 @@ body.mail-only-mode .header-text{display:block!important;}
         // الاتصال الأولي بالخادم يتم في الخلفية حتى لا يتوقف تسجيل الدخول.
         // لا نرسل النسخة المحلية إلى الخادم قبل أن نتأكد من أن الخادم لا يحتوي بيانات أحدث.
         async function initializeLanSyncInBackground(){
-            if(!LAN_SYNC_ENABLED) { LAN_SYNC_READY=false; LAN_SERVER_CHECKING=false; updateConnectionStatusUI(); return; }
-            LAN_SERVER_CHECKING=true; updateConnectionStatusUI();
+            if(!LAN_SYNC_ENABLED){LAN_SYNC_READY=false;LAN_SERVER_CHECKING=false;updateConnectionStatusUI();return;}
+            LAN_SERVER_CHECKING=true;updateConnectionStatusUI();
             try{
-                const res=await fetch(LAN_API_BASE + '/api/state?revision=' + encodeURIComponent(LAN_SERVER_REVISION), {cache:'no-store'});
-                if(res.ok){
-                    const state=await res.json();
-                    if(state && typeof state==='object'){
-                        LAN_SERVER_STATE=state;
-                        LAN_SERVER_ONLINE=true;
-                        LAN_SERVER_CHECKING=false;
-                        LAN_SERVER_REVISION=Number(state.revision)||0;
-                        LAN_LAST_APPLIED_REVISION=LAN_SERVER_REVISION;
-                        if(Array.isArray(state.services)) rawData=state.services;
-                        if(Array.isArray(state.serviceTypes) && state.serviceTypes.length) serviceTypes=[...new Set(state.serviceTypes)];
-                        if(Array.isArray(state.users) && state.users.length) users=state.users;
-                        if(Array.isArray(state.changeLog)) changeLog=state.changeLog;
-                        if(Array.isArray(state.messages)) mailMessages=state.messages;
-                        saveOfflineSnapshot(state);
-                        maybeAutoDownloadAttachments(state.messages);
-                        users.forEach(u=>{ if(!Array.isArray(u.categories)) u.categories=[...serviceTypes]; if(!u.permissions) u.permissions={}; });
-                        localStorage.setItem(SERVICES_DATA_KEY, JSON.stringify(rawData));
-                        localStorage.setItem(SERVICE_TYPES_KEY, JSON.stringify(serviceTypes));
-                        localStorage.setItem(USERS_KEY, JSON.stringify(users));
-                        localStorage.setItem(CHANGE_LOG_KEY, JSON.stringify(changeLog));
-                        localStorage.setItem(MAIL_KEY, JSON.stringify(mailMessages));
-                        if(currentUser){ const fresh=users.find(u=>u.username===currentUser.username); if(fresh) currentUser=fresh; }
-                        renderServiceTypeControls(); renderServiceTypeOptions(); if(currentUser) applyPermissions(); filterData(); updateMailUnreadBadge();
-                    }
-                } else { throw new Error('HTTP '+res.status); }
-            }catch(e){
-                LAN_SERVER_ONLINE=false; LAN_SERVER_CHECKING=false;
-                console.warn('تعذر الاتصال الأولي بالخادم، سيستمر التطبيق بالبيانات المحلية:',e);
-            }finally{
-                LAN_SYNC_READY=LAN_SYNC_ENABLED;
-                updateConnectionStatusUI();
-            }
+                await selectBestServerEndpoint();
+                if(!LAN_API_BASE) throw new Error('no_server_endpoint');
+                const res=await fetch(LAN_API_BASE+'/api/state?revision='+encodeURIComponent(LAN_SERVER_REVISION),{cache:'no-store'});
+                if(res.status===204){LAN_SERVER_ONLINE=true;LAN_SERVER_CHECKING=false;}
+                else if(res.ok){const state=await res.json();if(state&&typeof state==='object'){applyRemoteState(state);LAN_SERVER_ONLINE=true;LAN_SERVER_CHECKING=false;}}
+                else throw new Error('HTTP '+res.status);
+                LAN_SYNC_READY=true;
+                if(LAN_AUTH_TOKEN) connectLanWebSocket();
+            }catch(e){LAN_SERVER_ONLINE=false;LAN_SERVER_CHECKING=false;console.warn('تعذر الاتصال الأولي بالخادم، سيستمر التطبيق بالبيانات المحلية:',e);}
+            finally{LAN_SYNC_READY=LAN_SYNC_ENABLED;updateConnectionStatusUI();}
         }
         if(LAN_SYNC_ENABLED) setTimeout(initializeLanSyncInBackground,50);
 

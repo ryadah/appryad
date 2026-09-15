@@ -137,6 +137,8 @@ class MainActivity : Activity() {
     private fun offlineDir(): File = File(filesDir, "offline")
     private fun offlineStateFile(): File = File(offlineDir(), "state.json")
     private fun attachmentDir(): File = File(filesDir, "message_attachments")
+    private fun outgoingAttachmentDir(): File = File(filesDir, "message_outbox")
+    private fun safeOutgoingId(id: String): String = id.replace(Regex("[^A-Za-z0-9._-]"), "_").take(180)
     private fun safeFileName(name: String): String = name.replace(Regex("[^\\p{L}\\p{N}._ -]"), "_").take(180).ifBlank { "attachment" }
 
     private fun saveOfflineStateInternal(json: String) {
@@ -260,6 +262,32 @@ class MainActivity : Activity() {
                     else -> "other"
                 }
             } catch(_:Exception){ "unknown" }
+        }
+
+        @JavascriptInterface
+        fun saveOutgoingAttachment(attachmentId: String, dataUrl: String, fileName: String?): Boolean {
+            return try {
+                if (attachmentId.isBlank() || dataUrl.isBlank()) return false
+                val raw=dataUrl.substringAfter(',',dataUrl)
+                val bytes=Base64.decode(raw,Base64.DEFAULT)
+                if(bytes.size>8*1024*1024) return false
+                val dir=outgoingAttachmentDir(); if(!dir.exists()) dir.mkdirs()
+                File(dir,safeOutgoingId(attachmentId)+".bin").writeBytes(bytes)
+                true
+            } catch(_:Exception){ false }
+        }
+
+        @JavascriptInterface
+        fun getOutgoingAttachment(attachmentId: String): String {
+            return try {
+                val f=File(outgoingAttachmentDir(),safeOutgoingId(attachmentId)+".bin")
+                if(!f.exists()) "" else "data:application/octet-stream;base64,"+Base64.encodeToString(f.readBytes(),Base64.NO_WRAP)
+            } catch(_:Exception){ "" }
+        }
+
+        @JavascriptInterface
+        fun deleteOutgoingAttachment(attachmentId: String) {
+            try { File(outgoingAttachmentDir(),safeOutgoingId(attachmentId)+".bin").delete() } catch(_:Exception) {}
         }
 
         @JavascriptInterface
