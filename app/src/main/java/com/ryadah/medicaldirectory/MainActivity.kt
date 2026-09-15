@@ -16,6 +16,9 @@ import android.webkit.WebChromeClient
 import android.webkit.WebSettings
 import android.webkit.WebView
 import android.webkit.WebViewClient
+import android.print.PrintAttributes
+import android.print.PrintManager
+import android.print.PrintDocumentAdapter
 import android.provider.MediaStore
 import android.widget.Toast
 import android.Manifest
@@ -201,6 +204,31 @@ class MainActivity : Activity() {
         fun getAppVersionName(): String = try {
             packageManager.getPackageInfo(packageName, 0).versionName ?: ""
         } catch (_: Exception) { "" }
+
+        @JavascriptInterface
+        fun printHtmlReport(html: String, title: String?) {
+            runOnUiThread {
+                try {
+                    val printWebView = WebView(this@MainActivity)
+                    printWebView.settings.javaScriptEnabled = false
+                    printWebView.loadDataWithBaseURL(null, html, "text/html", "UTF-8", null)
+                    printWebView.webViewClient = object : WebViewClient() {
+                        override fun onPageFinished(view: WebView?, url: String?) {
+                            super.onPageFinished(view, url)
+                            try {
+                                val printManager = getSystemService(PRINT_SERVICE) as PrintManager
+                                val adapter: PrintDocumentAdapter = printWebView.createPrintDocumentAdapter(title?.ifBlank { "تقرير الدليل الطبي" } ?: "تقرير الدليل الطبي")
+                                printManager.print(title?.ifBlank { "تقرير الدليل الطبي" } ?: "تقرير الدليل الطبي", adapter, PrintAttributes.Builder().setMediaSize(PrintAttributes.MediaSize.ISO_A4).setMinMargins(PrintAttributes.Margins.NO_MARGINS).build())
+                            } catch (_: Exception) {
+                                Toast.makeText(this@MainActivity, "تعذر فتح نافذة الطباعة", Toast.LENGTH_SHORT).show()
+                            }
+                        }
+                    }
+                } catch (_: Exception) {
+                    Toast.makeText(this@MainActivity, "تعذر تجهيز التقرير للطباعة", Toast.LENGTH_SHORT).show()
+                }
+            }
+        }
 
         @JavascriptInterface
         fun openExternalUrl(url: String) {

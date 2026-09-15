@@ -1,0 +1,18 @@
+الدليل الطبي - التوقيع الثابت وإصدارات GitHub
+
+1) لا تحذف APK الحالي 1.6/1.7 قبل تثبيت مفتاح التوقيع الثابت. Android لا يسمح بالتحديث إذا اختلف مفتاح التوقيع.
+
+2) أنشئ keystore ثابت على جهازك (مرة واحدة فقط):
+keytool -genkeypair -v -keystore medical-directory-release.jks -alias medical-directory -keyalg RSA -keysize 2048 -validity 10000
+
+احفظ الملف وكلمات المرور في مكان آمن جداً. لا تضع ملف .jks داخل GitHub.
+
+3) في GitHub Repository > Settings > Secrets and variables > Actions أضف:
+KEYSTORE_BASE64 = محتوى medical-directory-release.jks بعد تحويله إلى Base64
+KEYSTORE_PASSWORD = كلمة مرور keystore
+KEY_ALIAS = medical-directory
+KEY_PASSWORD = كلمة مرور المفتاح
+
+4) يفضل أن يكون المستودع Private. لا تشارك ملف keystore أو كلمات المرور. فقدان المفتاح قد يمنع تحديث النسخ المنشورة بنفس التوقيع.
+
+5) النسخة الحالية 1.9 / versionCode 10. لا تثبتها فوق نسخة قديمة إذا كان توقيعها مختلفاً حتى يتم ضبط GitHub على نفس المفتاح.

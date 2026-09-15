@@ -44,3 +44,6 @@
 - WebSocket هو المسار الفوري الأساسي.
 - عند تعذر WebSocket، يستخدم التطبيق HTTP كممر احتياطي سريع كل ثانيتين أثناء بقاء التطبيق مفتوحًا.
 - لا تحتاج إلى فتح منفذ 8001 في المتصفح؛ هذا المنفذ مخصص لـ WebSocket فقط.
+
+
+التوقيع الثابت: يوجد Workflow باسم Build signed release APK. بعد إضافة أسرار KEYSTORE_BASE64 وKEYSTORE_PASSWORD وKEY_ALIAS وKEY_PASSWORD في GitHub شغّله من Actions.
