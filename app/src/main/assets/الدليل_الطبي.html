@@ -1234,7 +1234,7 @@ body.mail-only-mode .header-text{display:block!important;}
             try{ if(LAN_WS && (LAN_WS.readyState===WebSocket.OPEN || LAN_WS.readyState===WebSocket.CONNECTING)) return; }catch(e){}
             try{
                 LAN_WS_MANUAL_CLOSE=false; const ws=new WebSocket(LAN_WS_URL); LAN_WS=ws;
-                ws.onopen=function(){LAN_WS_CONNECTED=true;LAN_SERVER_ONLINE=true;LAN_SERVER_CHECKING=false;if(typeof updateConnectionStatusUI==='function')updateConnectionStatusUI();try{ws.send(JSON.stringify({type:'state_request',revision:LAN_SERVER_REVISION,username:currentUser?.username||''}));}catch(e){}};
+                ws.onopen=function(){LAN_WS_CONNECTED=true;LAN_SERVER_ONLINE=true;LAN_SERVER_CHECKING=false;if(typeof updateConnectionStatusUI==='function')updateConnectionStatusUI();};
                 ws.onmessage=function(ev){try{const msg=JSON.parse(ev.data);if(msg.requestId&&LAN_WS_PENDING.has(msg.requestId)){const p=LAN_WS_PENDING.get(msg.requestId);LAN_WS_PENDING.delete(msg.requestId);if(msg.type==='state_saved'||msg.type==='message_saved')p.resolve(msg);else p.reject(new Error(msg.error||'WebSocket request failed'));}if(msg.type==='auth_required'){ if(LAN_AUTH_TOKEN) ws.send(JSON.stringify({type:'auth',token:LAN_AUTH_TOKEN})); else ws.close(); } else if(msg.type==='auth_ok'){ if(msg.state) applyRemoteState(msg.state); LAN_SERVER_ONLINE=true; LAN_SERVER_CHECKING=false; updateConnectionStatusUI(); } else if(msg.type==='state'&&msg.state){applyRemoteState(msg.state);LAN_SERVER_ONLINE=true;LAN_SERVER_CHECKING=false;if(typeof updateConnectionStatusUI==='function')updateConnectionStatusUI();}else if(msg.type==='state_revision'){if(Number(msg.revision)>LAN_SERVER_REVISION) pollLanServer();}else if(msg.type==='message'&&msg.message){const st=LAN_SERVER_STATE?{...LAN_SERVER_STATE,messages:[...(LAN_SERVER_STATE.messages||[]).filter(x=>x&&x.id!==msg.message.id),msg.message],revision:Number(msg.revision)||LAN_SERVER_REVISION}:null;if(st)applyRemoteState(st);else{mailMessages=[...mailMessages.filter(x=>x&&x.id!==msg.message.id),msg.message];saveMailMessages();}maybeAutoDownloadAttachments([msg.message]);}}catch(e){}};
                 ws.onerror=function(){LAN_WS_CONNECTED=false;LAN_SERVER_ONLINE=false;if(typeof updateConnectionStatusUI==='function')updateConnectionStatusUI();};
                 ws.onclose=function(){LAN_WS_CONNECTED=false;LAN_SERVER_ONLINE=false;if(typeof updateConnectionStatusUI==='function')updateConnectionStatusUI();if(!LAN_WS_MANUAL_CLOSE){clearTimeout(LAN_WS_RECONNECT_TIMER);LAN_WS_RECONNECT_TIMER=setTimeout(connectLanWebSocket,5000);}};
@@ -1750,7 +1750,10 @@ body.mail-only-mode .header-text{display:block!important;}
                 // الخادم قد يكون متوقفًا مؤقتًا؛ لا نمنع استخدام الصفحة محليًا.
             }
         }
-        if (LAN_SYNC_ENABLED) setInterval(()=>{ if(!LAN_WS_CONNECTED) pollLanServer(); }, 60000);
+        // WebSocket هو القناة الفورية الأساسية. وإذا تعذر WebSocket (مثل حظر المنفذ 8001
+        // أو مشكلة في NAT/الجدار الناري) نستخدم مزامنة HTTP سريعة كقناة احتياطية.
+        // هذا يمنع بقاء البريد متأخرًا 60 ثانية كما كان في النسخة السابقة.
+        if (LAN_SYNC_ENABLED) setInterval(()=>{ if(!LAN_WS_CONNECTED && currentUser && !document.hidden) pollLanServer(); }, 2000);
         // يبدأ WebSocket بعد نجاح تسجيل الدخول واستلام رمز الجلسة.
 
         // حفظ تلقائي شامل: الخدمات + أنواع الخدمات + المستخدمون + سجل التعديلات.
