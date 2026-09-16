@@ -35,8 +35,22 @@ import java.io.RandomAccessFile
 import java.security.MessageDigest
 import android.net.ConnectivityManager
 import android.net.NetworkCapabilities
+import android.content.SharedPreferences
+import org.json.JSONObject
+import java.security.KeyStore
+import javax.crypto.Cipher
+import javax.crypto.KeyGenerator
+import javax.crypto.SecretKey
+import javax.crypto.spec.GCMParameterSpec
 
 class MainActivity : Activity() {
+    private companion object {
+        const val REMEMBER_PREFS = "medicalDirectoryRememberedLogin_v1"
+        const val REMEMBER_CIPHERTEXT = "ciphertext"
+        const val REMEMBER_IV = "iv"
+        const val REMEMBER_ALIAS = "MedicalDirectoryRememberKey_v1"
+    }
+
     private lateinit var webView: WebView
     private var filePathCallback: ValueCallback<Array<Uri>>? = null
     private var pendingDownloadName = "attachment"
@@ -194,6 +208,51 @@ class MainActivity : Activity() {
         } catch(_:Exception){ Toast.makeText(this,"المرفق غير محفوظ على الجهاز أو لا يوجد تطبيق لفتحه",Toast.LENGTH_LONG).show() }
     }
 
+    private fun rememberKey(): SecretKey {
+        val ks = KeyStore.getInstance("AndroidKeyStore").apply { load(null) }
+        val existing = ks.getKey(REMEMBER_ALIAS, null)
+        if (existing is SecretKey) return existing
+        val kg = KeyGenerator.getInstance("AES", "AndroidKeyStore")
+        kg.init(android.security.keystore.KeyGenParameterSpec.Builder(
+            REMEMBER_ALIAS,
+            android.security.keystore.KeyProperties.PURPOSE_ENCRYPT or android.security.keystore.KeyProperties.PURPOSE_DECRYPT
+        ).setBlockModes(android.security.keystore.KeyProperties.BLOCK_MODE_GCM)
+            .setEncryptionPaddings(android.security.keystore.KeyProperties.ENCRYPTION_PADDING_NONE)
+            .setUserAuthenticationRequired(false)
+            .build())
+        return kg.generateKey()
+    }
+
+    private fun encryptRememberedLogin(username: String, password: String): Boolean {
+        return try {
+            if (username.isBlank() || password.isBlank()) return false
+            val plain = JSONObject().apply { put("username", username); put("password", password) }.toString().toByteArray(Charsets.UTF_8)
+            val cipher = Cipher.getInstance("AES/GCM/NoPadding")
+            cipher.init(Cipher.ENCRYPT_MODE, rememberKey())
+            val prefs = getSharedPreferences(REMEMBER_PREFS, MODE_PRIVATE)
+            prefs.edit()
+                .putString(REMEMBER_CIPHERTEXT, Base64.encodeToString(cipher.doFinal(plain), Base64.NO_WRAP))
+                .putString(REMEMBER_IV, Base64.encodeToString(cipher.iv, Base64.NO_WRAP))
+                .apply()
+            true
+        } catch (_: Exception) { false }
+    }
+
+    private fun decryptRememberedLogin(): String {
+        return try {
+            val prefs = getSharedPreferences(REMEMBER_PREFS, MODE_PRIVATE)
+            val c = prefs.getString(REMEMBER_CIPHERTEXT, null) ?: return ""
+            val iv = prefs.getString(REMEMBER_IV, null) ?: return ""
+            val cipher = Cipher.getInstance("AES/GCM/NoPadding")
+            cipher.init(Cipher.DECRYPT_MODE, rememberKey(), GCMParameterSpec(128, Base64.decode(iv, Base64.DEFAULT)))
+            String(cipher.doFinal(Base64.decode(c, Base64.DEFAULT)), Charsets.UTF_8)
+        } catch (_: Exception) { "" }
+    }
+
+    private fun clearRememberedLoginInternal() {
+        try { getSharedPreferences(REMEMBER_PREFS, MODE_PRIVATE).edit().clear().apply() } catch (_: Exception) {}
+    }
+
     inner class AndroidBridge {
         @JavascriptInterface
         fun getAppVersionCode(): Int = try {
@@ -204,6 +263,26 @@ class MainActivity : Activity() {
         fun getAppVersionName(): String = try {
             packageManager.getPackageInfo(packageName, 0).versionName ?: ""
         } catch (_: Exception) { "" }
+
+        @JavascriptInterface
+        fun hasRememberedLogin(): Boolean {
+            return try { getSharedPreferences(REMEMBER_PREFS, MODE_PRIVATE).contains(REMEMBER_CIPHERTEXT) } catch (_: Exception) { false }
+        }
+
+        @JavascriptInterface
+        fun saveRememberedLogin(username: String, password: String): Boolean {
+            return encryptRememberedLogin(username, password)
+        }
+
+        @JavascriptInterface
+        fun getRememberedLogin(): String {
+            return decryptRememberedLogin()
+        }
+
+        @JavascriptInterface
+        fun clearRememberedLogin() {
+            clearRememberedLoginInternal()
+        }
 
         @JavascriptInterface
         fun printHtmlReport(html: String, title: String?) {

@@ -246,7 +246,10 @@
         .btn-add-type-tab:hover { background:#f5eaff !important; }
 
         .user-badge { position:absolute; right:0; font-size:.68rem; opacity:.9; white-space:nowrap; }
-        .settings-modal { position:fixed; inset:0; background:rgba(0,0,0,.48); display:none; align-items:center; justify-content:center; z-index:3000; padding:15px; }
+        .settings-modal { position:fixed; inset:0; background:rgba(0,0,0,.62); display:none; align-items:center; justify-content:center; z-index:6000; padding:15px; }
+        #passwordResetModal,#registrationModal{z-index:7000!important;}
+        #passwordResetModal .settings-card,#registrationModal .settings-card{width:min(720px,calc(100vw - 24px));max-height:calc(100vh - 24px);overflow:auto;position:relative;}
+        body.auth-form-open{overflow:hidden!important;}
         .settings-modal.show { display:flex; }
         .settings-card { width:min(760px,100%); max-height:92vh; overflow:auto; background:#fff; border-radius:16px; padding:20px; box-shadow:0 10px 40px rgba(0,0,0,.25); }
         .settings-section { border:1px solid #e9ecef; border-radius:12px; padding:14px; margin-bottom:12px; }
@@ -847,6 +850,7 @@ body.mail-only-mode .header-text{display:block!important;}
                 <div class="text-end mb-2"><button type="button" class="btn btn-link p-0" onclick="openPasswordResetModal()">نسيت كلمة المرور؟</button></div>
                 <div id="loginError" class="login-error"></div>
                 <button class="btn btn-primary w-100 fw-bold" type="submit">دخول</button>
+                <div id="rememberLoginNotice" class="small text-muted text-center mt-2" style="display:none"></div>
                 <div class="social-divider"><span>أو التسجيل بواسطة</span></div>
                 <div class="social-login-row"><button type="button" class="social-login-btn google" onclick="startSocialSignup('google')">G&nbsp; Google</button><button type="button" class="social-login-btn facebook" onclick="startSocialSignup('facebook')">f&nbsp; Facebook</button></div>
                 <div class="login-register-line">ليس لديك حساب؟ <button type="button" class="btn btn-link p-0 fw-bold" onclick="openRegistrationModal()">إنشاء حساب</button></div>
@@ -876,7 +880,7 @@ body.mail-only-mode .header-text{display:block!important;}
             <div class="col-md-6"><label class="form-label fw-bold">كلمة المرور</label><input id="regPassword" type="password" class="form-control" minlength="6" required></div>
             <div class="col-md-6"><label class="form-label fw-bold">الاسم الرباعي</label><input id="regDisplayName" class="form-control" required></div>
             <div class="col-md-6"><label class="form-label fw-bold">رقم الهاتف</label><input id="regPhone" class="form-control" inputmode="tel" required></div>
-            <div class="col-12"><label class="form-label fw-bold">العمل</label><input id="regWork" class="form-control" required></div>
+            <div class="col-md-6"><label class="form-label fw-bold">البريد الإلكتروني (اختياري)</label><input id="regEmail" type="email" class="form-control" autocomplete="email"></div><div class="col-md-6"><label class="form-label fw-bold">العمل</label><input id="regWork" class="form-control" required></div>
           </div>
           <div class="small text-muted mt-3">سيُرسل الطلب إلى المدير للموافقة أو الرفض، وبعد الموافقة يصبح اسم المستخدم أو اسم صاحب الحساب صالحاً لتسجيل الدخول.</div>
           <div class="text-end mt-3"><button class="btn btn-primary" type="submit">إرسال طلب التسجيل</button> <button class="btn btn-secondary" type="button" onclick="closeRegistrationModal()">إلغاء</button></div>
@@ -1975,28 +1979,46 @@ body.mail-only-mode .header-text{display:block!important;}
         let USER_HEARTBEAT_TIMER=null;
         function startUserHeartbeat(){ clearInterval(USER_HEARTBEAT_TIMER); if(!currentUser)return; sendUserHeartbeat(false); USER_HEARTBEAT_TIMER=setInterval(()=>{if(currentUser)sendUserHeartbeat(false);},60000); }
 
-        function login(event){
+        async function login(event){
             event.preventDefault();
             const u=document.getElementById('loginUsername').value.trim(); const p=document.getElementById('loginPassword').value;
             let found=users.find(x=>(x.username===u || x.displayName===u) && x.password===p);
-            // الحساب الافتراضي لمدير النظام: admin / admin@1000.
-            // ندعم أيضًا كلمة المرور القديمة (admin) حتى لا تتعطل النسخ السابقة.
             if(!found && u==='admin' && p==='admin@1000'){
                 const legacyAdmin=users.find(x=>x.username==='admin' && x.admin);
-                if(legacyAdmin){
-                    found=legacyAdmin;
-                    // ترقية كلمة مرور المدير القديمة تلقائيًا بعد نجاح الدخول.
-                    found.password='admin@1000';
-                    try{ localStorage.setItem(USERS_KEY, JSON.stringify(users)); }catch(e){}
-                }
+                if(legacyAdmin){ found=legacyAdmin; found.password='admin@1000'; try{localStorage.setItem(USERS_KEY,JSON.stringify(users));}catch(e){} }
             }
             if(!found){ document.getElementById('loginError').textContent='اسم المستخدم أو كلمة المرور غير صحيحة'; return; }
             if(found.status==='stopped'){ document.getElementById('loginError').textContent='هذا المستخدم موقوف. راجع مدير النظام.'; return; }
-            found.loginCount=(Number(found.loginCount)||0)+1; found.lastLogin=new Date().toISOString(); found.lastSeen=new Date().toISOString(); try{localStorage.setItem(USERS_KEY,JSON.stringify(users));}catch(e){}
+            found.loginCount=(Number(found.loginCount)||0)+1; found.lastLogin=new Date().toISOString(); found.lastSeen=new Date().toISOString();
+            try{localStorage.setItem(USERS_KEY,JSON.stringify(users));}catch(e){}
             document.getElementById('loginError').textContent='';
             activateLoggedInUser(found);
             startUserHeartbeat();
             authenticateLanSession(found.username,p);
+            setTimeout(()=>offerRememberLogin(found.username,p),250);
+        }
+        async function offerRememberLogin(username,password){
+            if(!window.RYADAH_ANDROID_APP||!window.Android||typeof window.Android.saveRememberedLogin!=='function') return;
+            try{
+                const already=typeof window.Android.hasRememberedLogin==='function' ? !!window.Android.hasRememberedLogin() : false;
+                if(already) return;
+                const ok=confirm('هل تريد حفظ بيانات الدخول على هذا الهاتف لتجاوز إدخال اسم المستخدم وكلمة المرور في المرات القادمة؟');
+                if(ok){
+                    const saved=!!window.Android.saveRememberedLogin(String(username||''),String(password||''));
+                    if(saved) alert('تم حفظ بيانات الدخول على هذا الهاتف بشكل مشفر. سيتم استخدامها تلقائياً في المرة القادمة.');
+                }
+            }catch(e){}
+        }
+        function clearRememberedLogin(){ try{ if(window.Android&&typeof window.Android.clearRememberedLogin==='function') window.Android.clearRememberedLogin(); }catch(e){} }
+        function tryAutoLoginWithRemembered(){
+            try{
+                if(!window.RYADAH_ANDROID_APP||!window.Android||typeof window.Android.getRememberedLogin!=='function') return false;
+                const raw=window.Android.getRememberedLogin(); if(!raw) return false;
+                const c=JSON.parse(raw||'{}'); if(!c.username||!c.password) return false;
+                document.getElementById('loginUsername').value=c.username; document.getElementById('loginPassword').value=c.password;
+                setTimeout(()=>{ const form=document.querySelector('#loginOverlay form'); if(form) form.requestSubmit(); },120);
+                return true;
+            }catch(e){return false;}
         }
         function hasPerm(name){ return !!(currentUser && currentUser.permissions && currentUser.permissions[name]); }
         function canPrintPage(){ return !!(currentUser && (currentUser.admin || hasPerm('print'))); }
@@ -2961,6 +2983,8 @@ body.mail-only-mode .header-text{display:block!important;}
 
         // Initial load
         document.getElementById('loginOverlay').style.display='flex';
+        setTimeout(tryAutoLoginWithRemembered,450);
+
         document.getElementById('loginUsername').value='';
         document.getElementById('loginPassword').value='';
         renderServiceTypeOptions();
@@ -3096,28 +3120,60 @@ body.mail-only-mode .header-text{display:block!important;}
 }
 
 
-        function openPasswordResetModal(){ document.getElementById('passwordResetModal').classList.add('show'); }
-        function closePasswordResetModal(){ document.getElementById('passwordResetModal').classList.remove('show'); }
-        function openRegistrationModal(){ document.getElementById('registrationModal').classList.add('show'); }
-        function closeRegistrationModal(){ document.getElementById('registrationModal').classList.remove('show'); }
+        function openPasswordResetModal(){
+            document.getElementById('registrationModal').classList.remove('show');
+            document.getElementById('passwordResetModal').classList.add('show');
+            document.body.classList.add('auth-form-open');
+            setTimeout(()=>document.getElementById('resetUsername')?.focus(),80);
+        }
+        function closePasswordResetModal(){ document.getElementById('passwordResetModal').classList.remove('show'); if(!document.getElementById('registrationModal').classList.contains('show')) document.body.classList.remove('auth-form-open'); }
+        function openRegistrationModal(){
+            document.getElementById('passwordResetModal').classList.remove('show');
+            document.getElementById('registrationModal').classList.add('show');
+            document.body.classList.add('auth-form-open');
+            setTimeout(()=>document.getElementById('regUsername')?.focus(),80);
+        }
+        function closeRegistrationModal(){ document.getElementById('registrationModal').classList.remove('show'); if(!document.getElementById('passwordResetModal').classList.contains('show')) document.body.classList.remove('auth-form-open'); }
         async function submitPasswordReset(event){
             event.preventDefault();
             try{ if(!LAN_API_BASE) await selectBestServerEndpoint(); const payload={type:'password_reset',username:document.getElementById('resetUsername').value.trim(),phone:document.getElementById('resetPhone').value.trim(),lastPassword:document.getElementById('resetLastPassword').value}; const r=await fetch(LAN_API_BASE+'/api/account/request',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload),cache:'no-store'}); const d=await r.json(); if(!r.ok) throw new Error(d.error||'request_failed'); closePasswordResetModal(); alert('تم إرسال طلب استعادة كلمة المرور للمدير.'); event.target.reset(); }catch(e){alert('تعذر إرسال الطلب. تأكد من الاتصال بالخادم.');}
         }
         async function submitRegistration(event){
             event.preventDefault();
-            try{ if(!LAN_API_BASE) await selectBestServerEndpoint(); const payload={type:'registration',username:document.getElementById('regUsername').value.trim(),password:document.getElementById('regPassword').value,displayName:document.getElementById('regDisplayName').value.trim(),phone:document.getElementById('regPhone').value.trim(),work:document.getElementById('regWork').value.trim()}; const r=await fetch(LAN_API_BASE+'/api/account/request',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload),cache:'no-store'}); const d=await r.json(); if(!r.ok) throw new Error(d.error||'request_failed'); closeRegistrationModal(); alert('تم إرسال طلب إنشاء الحساب للمدير للموافقة.'); event.target.reset(); }catch(e){alert('تعذر إرسال طلب التسجيل. تأكد من الاتصال بالخادم.');}
+            try{ if(!LAN_API_BASE) await selectBestServerEndpoint(); const payload={type:'registration',username:document.getElementById('regUsername').value.trim(),password:document.getElementById('regPassword').value,displayName:document.getElementById('regDisplayName').value.trim(),phone:document.getElementById('regPhone').value.trim(),email:document.getElementById('regEmail')?.value.trim()||'',work:document.getElementById('regWork').value.trim()}; const r=await fetch(LAN_API_BASE+'/api/account/request',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload),cache:'no-store'}); const d=await r.json(); if(!r.ok) throw new Error(d.error||'request_failed'); closeRegistrationModal(); alert('تم إرسال طلب إنشاء الحساب للمدير للموافقة.'); event.target.reset(); }catch(e){alert('تعذر إرسال طلب التسجيل. تأكد من الاتصال بالخادم.');}
         }
-        function startSocialSignup(provider){
+        async function startSocialSignup(provider){
             const label=provider==='google'?'Google':'Facebook';
-            if(!LAN_API_BASE){selectBestServerEndpoint().then(()=>startSocialSignup(provider));return;}
-            // لا نضع بيانات اعتماد OAuth داخل التطبيق. يفتح المسار المخصص إذا كان المدير قد ضبطه على السيرفر.
-            try{ const u=LAN_API_BASE+'/api/oauth/'+provider+'/start'; if(window.Android&&typeof window.Android.openExternalUrl==='function') window.Android.openExternalUrl(u); else window.open(u,'_blank'); }catch(e){alert('تعذر بدء التسجيل بواسطة '+label+'.');}
+            try{
+                if(!LAN_API_BASE) await selectBestServerEndpoint();
+                if(!LAN_API_BASE){alert('لا يمكن الوصول إلى خادم الدليل الطبي حالياً.');return;}
+                const r=await fetch(LAN_API_BASE+'/api/oauth/'+provider+'/status',{cache:'no-store'});
+                const d=await r.json().catch(()=>({}));
+                if(!r.ok || !d.configured){
+                    alert('التسجيل بواسطة '+label+' يحتاج إعداد OAuth على السيرفر أولاً.\n\nبعد إعداد حساب '+label+' وتأمين عنوان الاستدعاء HTTPS سيعمل الزر مباشرة.');
+                    return;
+                }
+                const u=LAN_API_BASE+'/api/oauth/'+provider+'/start';
+                if(window.Android&&typeof window.Android.openExternalUrl==='function') window.Android.openExternalUrl(u); else window.open(u,'_blank');
+            }catch(e){alert('تعذر بدء التسجيل بواسطة '+label+'. تأكد من تشغيل السيرفر.');}
         }
         async function handleAccountRequest(requestId,action){
             let newPassword='';
             if(action==='approve'){newPassword=prompt('أدخل كلمة المرور التي سيعتمدها المدير (اتركها فارغة ليولد النظام كلمة مؤقتة):','')||'';}
-            try{const r=await fetch(LAN_API_BASE+'/api/admin/account-requests/action',{method:'POST',headers:{'Content-Type':'application/json','Authorization':'Bearer '+LAN_AUTH_TOKEN},body:JSON.stringify({requestId,action,newPassword}),cache:'no-store'});const d=await r.json();if(!r.ok)throw new Error(d.error||'action_failed');const q=d.request||{};if(action==='approve'&&q.temporaryPassword){alert('تمت الموافقة. كلمة المرور المحلية الجديدة: '+q.temporaryPassword+'\nلن يتم عرض أو استرجاع كلمة المرور القديمة.'); if(q.phone && confirm('هل تريد فتح واتساب لإرسال بيانات الدخول للمستخدم؟')){const p=String(q.phone).replace(/[^0-9]/g,'');const text=encodeURIComponent('تم اعتماد حسابك في الدليل الطبي. اسم المستخدم: '+(q.approvedUsername||'')+'\nكلمة المرور: '+q.temporaryPassword);const url='https://wa.me/'+p+'?text='+text;if(window.Android&&typeof window.Android.openExternalUrl==='function')window.Android.openExternalUrl(url);else window.open(url,'_blank');}}else alert('تم تنفيذ العملية.');showChangeReportTab('requests');}catch(e){alert('تعذر تنفيذ العملية: '+(e.message||'خطأ'));}
+            try{
+                if(!LAN_API_BASE) await selectBestServerEndpoint();
+                if(!LAN_AUTH_TOKEN) throw new Error('جلسة المدير غير صالحة، أعد تسجيل دخول المدير.');
+                const r=await fetch(LAN_API_BASE+'/api/admin/account-requests/action',{method:'POST',headers:{'Content-Type':'application/json','Authorization':'Bearer '+LAN_AUTH_TOKEN},body:JSON.stringify({requestId,action,newPassword}),cache:'no-store'});
+                const d=await r.json().catch(()=>({}));
+                if(r.status===401){throw new Error('انتهت جلسة المدير. سجّل خروج المدير ثم ادخل من جديد.');}
+                if(!r.ok) throw new Error(d.detail||d.error||'action_failed');
+                const q=d.request||{};
+                if(action==='approve'&&q.temporaryPassword){
+                    alert('تمت الموافقة بنجاح.\nاسم المستخدم: '+(q.approvedUsername||'')+'\nكلمة المرور: '+q.temporaryPassword+'\n\nلن يتم حفظ كلمات المرور القديمة.');
+                    if(q.phone && confirm('هل تريد فتح واتساب لإرسال بيانات الدخول للمستخدم؟')){const p=String(q.phone).replace(/[^0-9]/g,'');const text=encodeURIComponent('تم اعتماد حسابك في الدليل الطبي. اسم المستخدم: '+(q.approvedUsername||'')+'\nكلمة المرور: '+q.temporaryPassword);const url='https://wa.me/'+p+'?text='+text;if(window.Android&&typeof window.Android.openExternalUrl==='function')window.Android.openExternalUrl(url);else window.open(url,'_blank');}
+                }else alert(action==='reject'?'تم رفض الطلب.':'تم تنفيذ العملية بنجاح.');
+                await showChangeReportTab('requests');
+            }catch(e){alert('تعذر تنفيذ العملية: '+(e.message||'خطأ غير معروف'));}
         }
         function contactUserWhatsApp(phone,type){const p=String(phone||'').replace(/[^0-9]/g,'');const text=encodeURIComponent('بخصوص '+type+' في تطبيق الدليل الطبي.');const url='https://wa.me/'+p+'?text='+text; if(window.Android&&typeof window.Android.openExternalUrl==='function')window.Android.openExternalUrl(url);else window.open(url,'_blank');}
         function contactUserSms(phone,type){const p=String(phone||'').replace(/[^0-9+]/g,'');const text=encodeURIComponent('بخصوص '+type+' في تطبيق الدليل الطبي.');const url='sms:'+p+'?body='+text;if(window.Android&&typeof window.Android.openExternalUrl==='function')window.Android.openExternalUrl(url);else window.location.href=url;}
