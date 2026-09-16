@@ -44,11 +44,17 @@ import javax.crypto.SecretKey
 import javax.crypto.spec.GCMParameterSpec
 
 class MainActivity : Activity() {
-    private companion object {
+    companion object {
         const val REMEMBER_PREFS = "medicalDirectoryRememberedLogin_v1"
         const val REMEMBER_CIPHERTEXT = "ciphertext"
         const val REMEMBER_IV = "iv"
         const val REMEMBER_ALIAS = "MedicalDirectoryRememberKey_v1"
+        private const val FILE_CHOOSER_REQUEST = 4101
+        private const val CREATE_DOCUMENT_REQUEST = 4102
+        private const val NOTIFICATION_PERMISSION_REQUEST = 4103
+        private const val ADMIN_UPDATE_UPLOAD_REQUEST = 4104
+        const val NOTIFICATION_PREFS = "medicalDirectoryNotifications"
+        const val NOTIFICATION_USERNAME = "username"
     }
 
     private lateinit var webView: WebView
@@ -771,13 +777,4 @@ class MainActivity : Activity() {
         if (webView.canGoBack()) webView.goBack() else super.onBackPressed()
     }
 
-
-    companion object {
-        private const val FILE_CHOOSER_REQUEST = 4101
-        private const val CREATE_DOCUMENT_REQUEST = 4102
-        private const val NOTIFICATION_PERMISSION_REQUEST = 4103
-        private const val ADMIN_UPDATE_UPLOAD_REQUEST = 4104
-        const val NOTIFICATION_PREFS = "medicalDirectoryNotifications"
-        const val NOTIFICATION_USERNAME = "username"
-    }
 }
